@@ -6,16 +6,11 @@ import requests
 import time
 import os
 from datetime import datetime
+import pytz
 
-# ==========================
-# TELEGRAM AYARLARI (ENV)
-# ==========================
 TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# ==========================
-# STRATEJİ AYARLARI
-# ==========================
 INTERVAL = "15m"
 PERIOD = "5d"
 TP_PERCENT = 0.025
@@ -30,8 +25,9 @@ def send_telegram(message):
     requests.post(url, data=data)
 
 def market_hours():
-    now = datetime.now()
-    return now.hour >= 9 and now.hour <= 12
+    tz = pytz.timezone("Europe/Istanbul")
+    now = datetime.now(tz)
+    return 9 <= now.hour <= 18
 
 def run_strategy():
     print("🔍 Tarama başladı...")
@@ -66,6 +62,7 @@ def run_strategy():
 
             first_hour = df.iloc[:4]
             first_hour_high = first_hour["High"].max()
+
             if last.Close <= first_hour_high:
                 continue
 
@@ -111,9 +108,12 @@ ATR%: {round(atr_percent,2)}
         except:
             continue
 
-# ==========================
+# =======================
 # SÜREKLİ ÇALIŞ
-# ==========================
+# =======================
+
+send_telegram("🤖 Bot aktif ve çalışıyor.")
+
 while True:
     if market_hours():
         run_strategy()
