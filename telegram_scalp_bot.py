@@ -4,12 +4,14 @@ import ta
 import numpy as np
 import requests
 import time
+import os
+from datetime import datetime
 
 # ==========================
-# TELEGRAM AYARLARI
+# TELEGRAM AYARLARI (ENV)
 # ==========================
-TOKEN = "AAHoeBQMPKx_LYeFTZRL-zHaugQDrBS0K48"
-CHAT_ID = "6098301795"
+TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
 # ==========================
 # STRATEJİ AYARLARI
@@ -20,81 +22,77 @@ TP_PERCENT = 0.025
 ATR_MULTIPLIER = 1.2
 MIN_VOLUME_RATIO = 1.5
 
-# ==========================
-# TELEGRAM MESAJ FONKSİYONU
-# ==========================
+sent_signals = set()
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
+    data = {"chat_id": CHAT_ID, "text": message}
     requests.post(url, data=data)
 
-# ==========================
-# HİSSE LİSTESİ
-# ==========================
-bist_df = pd.read_csv("bist_list.csv")
-tickers = [x + ".IS" for x in bist_df["Ticker"].tolist()]
+def market_hours():
+    now = datetime.now()
+    return now.hour >= 9 and now.hour <= 12
 
-print("🔍 Tarama başlıyor...")
+def run_strategy():
+    print("🔍 Tarama başladı...")
 
-signals = []
+    bist_df = pd.read_csv("bist_list.csv")
+    tickers = [x + ".IS" for x in bist_df["Ticker"].tolist()]
 
-for ticker in tickers:
-    try:
-        df = yf.download(ticker, period=PERIOD, interval=INTERVAL, progress=False)
+    for ticker in tickers:
+        try:
+            df = yf.download(ticker, period=PERIOD, interval=INTERVAL, progress=False)
 
-        if df.empty or len(df) < 50:
-            continue
+            if df.empty or len(df) < 50:
+                continue
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
-        close = df["Close"]
-        high = df["High"]
-        low = df["Low"]
-        volume = df["Volume"]
+            close = df["Close"]
+            high = df["High"]
+            low = df["Low"]
+            volume = df["Volume"]
 
-        atr = ta.volatility.average_true_range(high, low, close, 14)
-        vol_ma20 = volume.rolling(20).mean()
+            atr = ta.volatility.average_true_range(high, low, close, 14)
+            vol_ma20 = volume.rolling(20).mean()
 
-        df = df.assign(atr=atr, vol_ma20=vol_ma20).dropna()
-        last = df.iloc[-1]
+            df = df.assign(atr=atr, vol_ma20=vol_ma20).dropna()
+            last = df.iloc[-1]
 
-        # HACİM PATLAMASI
-        volume_ratio = last.Volume / last.vol_ma20
-        if volume_ratio < MIN_VOLUME_RATIO:
-            continue
+            volume_ratio = last.Volume / last.vol_ma20
+            if volume_ratio < MIN_VOLUME_RATIO:
+                continue
 
-        # İLK SAAT RANGE
-        first_hour = df.iloc[:4]
-        first_hour_high = first_hour["High"].max()
+            first_hour = df.iloc[:4]
+            first_hour_high = first_hour["High"].max()
+            if last.Close <= first_hour_high:
+                continue
 
-        if last.Close <= first_hour_high:
-            continue
+            atr_percent = last.atr / last.Close * 100
+            if atr_percent < 0.8:
+                continue
 
-        # ATR %
-        atr_percent = last.atr / last.Close * 100
-        if atr_percent < 0.8:
-            continue
+            entry = last.Close
+            stop = entry - ATR_MULTIPLIER * last.atr
+            target = entry * (1 + TP_PERCENT)
 
-        entry = last.Close
-        stop = entry - ATR_MULTIPLIER * last.atr
-        target = entry * (1 + TP_PERCENT)
+            risk = entry - stop
+            reward = target - entry
 
-        risk = entry - stop
-        reward = target - entry
+            if risk <= 0:
+                continue
 
-        if risk <= 0:
-            continue
+            rr = reward / risk
+            if rr < 1.2:
+                continue
 
-        rr = reward / risk
+            signal_id = f"{ticker}_{round(entry,2)}"
 
-        if rr < 1.2:
-            continue
+            if signal_id in sent_signals:
+                continue
 
-        message = f"""
+            message = f"""
 🔥 INTRADAY SCALP SİNYALİ
 
 Hisse: {ticker}
@@ -106,18 +104,19 @@ VolRatio: {round(volume_ratio,2)}
 ATR%: {round(atr_percent,2)}
 """
 
-        signals.append(message)
+            send_telegram(message)
+            sent_signals.add(signal_id)
+            time.sleep(1)
 
-    except:
-        continue
+        except:
+            continue
 
 # ==========================
-# MESAJ GÖNDER
+# SÜREKLİ ÇALIŞ
 # ==========================
-if signals:
-    for s in signals:
-        send_telegram(s)
-        time.sleep(1)
-    print("✅ Sinyaller gönderildi.")
-else:
-    print("⚠️ Sinyal yok.")
+while True:
+    if market_hours():
+        run_strategy()
+    else:
+        print("⏸ Piyasa saati dışında.")
+    time.sleep(900)
